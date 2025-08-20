@@ -13,6 +13,7 @@ def build_ancestor_set(db: Session, tip_id: str) -> set[str]:
     return seen
 
 def find_lca(db: Session, a_tip: str, b_tip: str) -> Optional[str]:
+    # First try exact ID matching
     a_anc = build_ancestor_set(db, a_tip)
     cur = db.get(Message, b_tip)
     while cur:
@@ -21,7 +22,47 @@ def find_lca(db: Session, a_tip: str, b_tip: str) -> Optional[str]:
         if not cur.parent_message_id:
             break
         cur = db.get(Message, cur.parent_message_id)
+    
+    # If no exact match, try content-based matching
+    a_tip_msg = db.get(Message, a_tip)
+    b_tip_msg = db.get(Message, b_tip)
+    
+    if not a_tip_msg or not b_tip_msg:
+        return None
+    
+    # Build content-based ancestor sets
+    a_content_anc = build_content_ancestor_set(db, a_tip_msg)
+    cur = b_tip_msg
+    while cur:
+        if cur.id in a_content_anc:
+            return cur.id
+        if not cur.parent_message_id:
+            break
+        cur = db.get(Message, cur.parent_message_id)
+    
     return None  # different roots
+
+def build_content_ancestor_set(db: Session, tip_msg) -> set[str]:
+    """Build set of message IDs that share content with ancestors of tip_msg"""
+    seen = set()
+    cur = tip_msg
+    while cur:
+        seen.add(cur.id)
+        # Also find messages with same content in other branches
+        # Use JSON string comparison to avoid PostgreSQL JSON operator issues
+        similar_msgs = db.query(Message).filter(
+            Message.role == cur.role
+        ).all()
+        for msg in similar_msgs:
+            # Compare content as JSON strings
+            if (msg.content.get('text') == cur.content.get('text') and 
+                msg.role == cur.role):
+                seen.add(msg.id)
+        
+        if not cur.parent_message_id:
+            break
+        cur = db.get(Message, cur.parent_message_id)
+    return seen
 
 def path_after(db: Session, from_id: str, tip_id: str) -> List[Message]:
     path: List[Message] = []

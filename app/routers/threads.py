@@ -1,15 +1,65 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Thread
 from app.schemas import ThreadCreate, ThreadOut
 from app.auth import get_current_user
 from uuid import uuid4
+from datetime import datetime
 
 router = APIRouter(tags=["threads"])
 
-@router.post("/threads", response_model=ThreadOut)
-def create_thread(body: ThreadCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    t = Thread(id=str(uuid4()), owner_id=user.id, title=body.title)
-    db.add(t); db.commit(); db.refresh(t)
-    return ThreadOut(id=t.id, title=t.title)
+@router.post(
+    "/threads", 
+    response_model=ThreadOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new thread",
+    description="Create a new conversation thread. The thread will be owned by the authenticated user.",
+    responses={
+        201: {"description": "Thread created successfully"},
+        400: {"description": "Invalid request data"},
+        401: {"description": "Authentication required"},
+        422: {"description": "Validation error"},
+    }
+)
+def create_thread(
+    body: ThreadCreate, 
+    db: Session = Depends(get_db), 
+    user=Depends(get_current_user)
+):
+    """
+    Create a new conversation thread.
+    
+    Args:
+        body: Thread creation data
+        db: Database session
+        user: Authenticated user
+        
+    Returns:
+        ThreadOut: Created thread information
+        
+    Raises:
+        HTTPException: If thread creation fails
+    """
+    try:
+        t = Thread(
+            id=str(uuid4()), 
+            owner_id=user.id, 
+            title=body.title,
+            created_at=datetime.utcnow()
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        
+        return ThreadOut(
+            id=t.id, 
+            title=t.title,
+            created_at=t.created_at
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create thread: {str(e)}"
+        )

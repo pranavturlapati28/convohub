@@ -1,6 +1,6 @@
 # app/models.py
 import uuid, datetime
-from sqlalchemy import Column, String, DateTime, ForeignKey, CheckConstraint, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, CheckConstraint, JSON, Text, Boolean, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db import Base
@@ -11,29 +11,45 @@ def now(): return datetime.datetime.utcnow()
 class Thread(Base):
     __tablename__ = "threads"
     id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
-    owner_id = Column(UUID(as_uuid=False), nullable=False)
-    title = Column(String, nullable=False)
+    owner_id = Column(UUID(as_uuid=False), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
 
+    # relationships
     branches = relationship("Branch", back_populates="thread", cascade="all, delete-orphan")
+    merges = relationship("Merge", back_populates="thread", cascade="all, delete-orphan")
+    summaries = relationship("Summary", back_populates="thread", cascade="all, delete-orphan")
+    memories = relationship("Memory", back_populates="thread", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index('ix_threads_owner_created', 'owner_id', 'created_at'),
+    )
 
 
 class Branch(Base):
     __tablename__ = "branches"
     id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
-    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
-    name = Column(String, nullable=False)
-    base_message_id = Column(UUID(as_uuid=False), nullable=True)
-
+    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    base_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id"), nullable=True)
+    
+    # Forking metadata
     created_from_branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id"), nullable=True)
     created_from_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id", use_alter=True, name="fk_branch_created_from_message"), nullable=True)
-
+    
+    # Status
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
 
     # relationships
     thread = relationship("Thread", back_populates="branches")
-
-    # ↓↓↓ IMPORTANT: disambiguate using the correct FK
+    base_message = relationship("Message", foreign_keys=[base_message_id], uselist=False)
+    
+    # Messages in this branch
     messages = relationship(
         "Message",
         back_populates="branch",
@@ -41,7 +57,7 @@ class Branch(Base):
         foreign_keys="Message.branch_id",
     )
 
-    # optional: self-reference to origin branch (for metadata only)
+    # Forking relationships (metadata only)
     created_from_branch = relationship(
         "Branch",
         remote_side=[id],
@@ -49,8 +65,6 @@ class Branch(Base):
         uselist=False,
         viewonly=True,
     )
-
-    # optional: reference to the fork point message (metadata only)
     created_from_message = relationship(
         "Message",
         foreign_keys=[created_from_message_id],
@@ -58,35 +72,36 @@ class Branch(Base):
         viewonly=True,
     )
 
+    __table_args__ = (
+        UniqueConstraint('thread_id', 'name', name='uq_branch_name_per_thread'),
+        Index('ix_branches_thread_created', 'thread_id', 'created_at'),
+    )
+
 
 class Message(Base):
     __tablename__ = "messages"
     id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
-
-    # ↓↓↓ FK to Branch (the one used by Branch.messages)
-    branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
-
-    # self-referential parent link
+    
+    # Branch relationship
+    branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # DAG parent relationship (single parent for non-merge nodes)
     parent_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id"), nullable=True)
-
-    role = Column(String, nullable=False)
+    
+    # Content
+    role = Column(String(20), nullable=False)  # user, assistant, system, tool
     content = Column(JSON, nullable=False)
     state_snapshot = Column(JSON, nullable=True)
-    origin = Column(String, nullable=False, default="live")  # live | merge | import
+    
+    # Metadata
+    origin = Column(String(20), nullable=False, default="live")  # live, merge, import
     created_at = Column(DateTime, default=now, nullable=False)
-
-    __table_args__ = (
-        CheckConstraint("role IN ('user','assistant','system','tool')", name="ck_role"),
-    )
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
 
     # relationships
-    branch = relationship(
-        "Branch",
-        back_populates="messages",
-        foreign_keys=[branch_id],
-    )
-
-    # optional: parent/children relationships for DAG traversal
+    branch = relationship("Branch", back_populates="messages", foreign_keys=[branch_id])
+    
+    # DAG relationships
     parent = relationship(
         "Message",
         remote_side=[id],
@@ -99,16 +114,161 @@ class Message(Base):
         primaryjoin="Message.parent_message_id==Message.id",
         viewonly=True,
     )
+    
+    # Merge relationships
+    merges_as_lca = relationship("Merge", foreign_keys="Merge.lca_message_id", uselist=False)
+    merges_as_result = relationship("Merge", foreign_keys="Merge.merged_into_message_id", uselist=False)
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user','assistant','system','tool')", name="ck_message_role"),
+        CheckConstraint("origin IN ('live','merge','import')", name="ck_message_origin"),
+        Index('ix_messages_branch_created', 'branch_id', 'created_at'),
+        Index('ix_messages_parent', 'parent_message_id'),
+    )
+
+
+class Edge(Base):
+    """Represents explicit edges in the message DAG for multi-parent relationships (merge nodes)"""
+    __tablename__ = "edges"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
+    
+    # Edge endpoints
+    from_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    to_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Edge metadata
+    edge_type = Column(String(20), nullable=False, default="parent")  # parent, merge_parent, reference
+    weight = Column(String(10), nullable=True)  # For weighted relationships
+    
+    created_at = Column(DateTime, default=now, nullable=False)
+
+    # relationships
+    from_message = relationship("Message", foreign_keys=[from_message_id])
+    to_message = relationship("Message", foreign_keys=[to_message_id])
+
+    __table_args__ = (
+        CheckConstraint("edge_type IN ('parent','merge_parent','reference')", name="ck_edge_type"),
+        UniqueConstraint('from_message_id', 'to_message_id', name='uq_edge_unique'),
+        Index('ix_edges_from', 'from_message_id'),
+        Index('ix_edges_to', 'to_message_id'),
+        Index('ix_edges_type', 'edge_type'),
+    )
 
 
 class Merge(Base):
     __tablename__ = "merges"
     id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
-    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
+    
+    # Merge context
+    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True)
     source_branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id"), nullable=False)
     target_branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id"), nullable=False)
-    strategy = Column(String, nullable=False)  # syntactic | semantic | hybrid
+    
+    # Merge strategy and results
+    strategy = Column(String(20), nullable=False)  # syntactic, semantic, hybrid
     lca_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id"), nullable=True)
     merged_into_message_id = Column(UUID(as_uuid=False), ForeignKey("messages.id"), nullable=True)
+    
+    # Merge metadata
     summary = Column(JSON, nullable=True)
+    conflict_resolution = Column(JSON, nullable=True)  # How conflicts were resolved
     created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    # relationships
+    thread = relationship("Thread", back_populates="merges")
+    source_branch = relationship("Branch", foreign_keys=[source_branch_id])
+    target_branch = relationship("Branch", foreign_keys=[target_branch_id])
+    lca_message = relationship("Message", foreign_keys=[lca_message_id])
+    merged_into_message = relationship("Message", foreign_keys=[merged_into_message_id])
+
+    __table_args__ = (
+        CheckConstraint("strategy IN ('syntactic','semantic','hybrid')", name="ck_merge_strategy"),
+        CheckConstraint("source_branch_id != target_branch_id", name="ck_merge_different_branches"),
+        Index('ix_merges_thread_created', 'thread_id', 'created_at'),
+        Index('ix_merges_source', 'source_branch_id'),
+        Index('ix_merges_target', 'target_branch_id'),
+    )
+
+
+class Summary(Base):
+    """Thread-level summaries and metadata"""
+    __tablename__ = "summaries"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
+    
+    # Context
+    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    branch_id = Column(UUID(as_uuid=False), ForeignKey("branches.id"), nullable=True)  # Optional branch-specific summary
+    
+    # Summary content
+    summary_type = Column(String(20), nullable=False)  # thread, branch, conversation, topic
+    content = Column(Text, nullable=False)
+    summary_metadata = Column(JSON, nullable=True)  # Additional summary metadata
+    
+    # Versioning
+    version = Column(String(10), nullable=False, default="1.0")
+    is_current = Column(Boolean, default=True, nullable=False)
+    
+    created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    # relationships
+    thread = relationship("Thread", back_populates="summaries")
+    branch = relationship("Branch")
+
+    __table_args__ = (
+        CheckConstraint("summary_type IN ('thread','branch','conversation','topic')", name="ck_summary_type"),
+        Index('ix_summaries_thread_type', 'thread_id', 'summary_type'),
+        Index('ix_summaries_branch', 'branch_id'),
+        Index('ix_summaries_current', 'is_current'),
+    )
+
+
+class Memory(Base):
+    """Long-term memory and context for threads"""
+    __tablename__ = "memories"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
+    
+    # Context
+    thread_id = Column(UUID(as_uuid=False), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Memory content
+    memory_type = Column(String(20), nullable=False)  # fact, preference, context, relationship
+    key = Column(String(100), nullable=False)  # Memory key/identifier
+    value = Column(Text, nullable=False)  # Memory value
+    memory_metadata = Column(JSON, nullable=True)  # Additional memory metadata
+    
+    # Memory properties
+    confidence = Column(String(10), nullable=True)  # Confidence level
+    source = Column(String(50), nullable=True)  # How this memory was derived
+    expires_at = Column(DateTime, nullable=True)  # Optional expiration
+    
+    created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    # relationships
+    thread = relationship("Thread", back_populates="memories")
+
+    __table_args__ = (
+        CheckConstraint("memory_type IN ('fact','preference','context','relationship')", name="ck_memory_type"),
+        UniqueConstraint('thread_id', 'key', name='uq_memory_thread_key'),
+        Index('ix_memories_thread_type', 'thread_id', 'memory_type'),
+        Index('ix_memories_key', 'key'),
+        Index('ix_memories_expires', 'expires_at'),
+    )
+
+
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
+    key = Column(String(100), nullable=False, index=True)
+    operation = Column(String(50), nullable=False)  # e.g., "merge", "send_message"
+    result = Column(JSON, nullable=True)  # Stored result for idempotency
+    created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("key != ''", name="ck_key_not_empty"),
+        UniqueConstraint('key', 'operation', name='uq_idempotency_key_operation'),
+        Index('ix_idempotency_created', 'created_at'),
+    )
