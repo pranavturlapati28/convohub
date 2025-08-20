@@ -1,0 +1,56 @@
+# OS
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test & cache
+.pytest_cache/
+.cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Logs & profiling
+*.log
+*.prof
+*.pid
+
+# Environment files (keep out of VCS)
+.env
+.env.*
+.python-version
+
+# Editors / IDEs
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node (if present)
+node_modules/
+
+# SQLite or local DB files
+*.db
+*.sqlite3
+
+# NOTE: keep Alembic migrations in version control
+# migrations/** is intentionally NOT ignored
+
