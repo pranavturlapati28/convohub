@@ -299,6 +299,169 @@ class EdgeOut(BaseModel):
             }
         }
 
+# Auth schemas
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="User email address")
+    tenant_domain: str = Field(..., description="Tenant domain")
+    password: str = Field(..., description="User password")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "email": "admin@example.com",
+                "tenant_domain": "example.local",
+                "password": "securepassword123"
+            }
+        }
+
+class LoginResponse(BaseModel):
+    access_token: str = Field(..., description="JWT access token")
+    token_type: str = Field(..., description="Token type (bearer)")
+    user: "UserOut" = Field(..., description="User information")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "bearer",
+                "user": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "email": "admin@example.com",
+                    "name": "Admin User",
+                    "role": "admin",
+                    "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+                    "permissions": ["*"],
+                    "created_at": "2024-01-15T10:30:00Z"
+                }
+            }
+        }
+
+class TenantCreate(BaseModel):
+    name: str = Field(..., description="Tenant name")
+    domain: Optional[str] = Field(None, description="Tenant domain")
+    settings: Optional[Dict[str, Any]] = Field(None, description="Tenant-specific settings")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Acme Corporation",
+                "domain": "acme.local",
+                "settings": {"theme": "dark", "timezone": "UTC"}
+            }
+        }
+
+class TenantOut(BaseModel):
+    id: str = Field(..., description="Unique tenant identifier")
+    name: str = Field(..., description="Tenant name")
+    domain: Optional[str] = Field(None, description="Tenant domain")
+    settings: Optional[Dict[str, Any]] = Field(None, description="Tenant-specific settings")
+    is_active: bool = Field(..., description="Whether tenant is active")
+    created_at: datetime = Field(..., description="Tenant creation timestamp")
+    updated_at: datetime = Field(..., description="Tenant last update timestamp")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440001",
+                "name": "Acme Corporation",
+                "domain": "acme.local",
+                "settings": {"theme": "dark", "timezone": "UTC"},
+                "is_active": True,
+                "created_at": "2024-01-15T10:30:00Z",
+                "updated_at": "2024-01-15T10:30:00Z"
+            }
+        }
+
+class UserCreate(BaseModel):
+    email: str = Field(..., description="User email address")
+    name: str = Field(..., description="User full name")
+    role: Literal["admin", "user", "guest"] = Field(default="user", description="User role")
+    permissions: Optional[List[str]] = Field(None, description="User permissions")
+
+    @validator('email')
+    def validate_email(cls, v):
+        if '@' not in v:
+            raise ValueError('Must be a valid email address')
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "email": "john.doe@example.com",
+                "name": "John Doe",
+                "role": "user",
+                "permissions": ["read", "write"]
+            }
+        }
+
+class UserOut(BaseModel):
+    id: str = Field(..., description="Unique user identifier")
+    email: str = Field(..., description="User email address")
+    name: str = Field(..., description="User full name")
+    role: str = Field(..., description="User role")
+    tenant_id: str = Field(..., description="Tenant identifier")
+    permissions: List[str] = Field(..., description="User permissions")
+    created_at: datetime = Field(..., description="User creation timestamp")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "email": "john.doe@example.com",
+                "name": "John Doe",
+                "role": "user",
+                "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+                "permissions": ["read", "write"],
+                "created_at": "2024-01-15T10:30:00Z"
+            }
+        }
+
+class ThreadCollaboratorCreate(BaseModel):
+    user_id: str = Field(..., description="User identifier")
+    role: Literal["owner", "editor", "viewer"] = Field(default="viewer", description="Collaborator role")
+    permissions: Optional[List[str]] = Field(None, description="Thread-specific permissions")
+
+    @validator('user_id')
+    def validate_uuid(cls, v):
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError('Must be a valid UUID')
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                "role": "editor",
+                "permissions": ["read", "write", "merge"]
+            }
+        }
+
+class ThreadCollaboratorOut(BaseModel):
+    id: str = Field(..., description="Unique collaborator identifier")
+    thread_id: str = Field(..., description="Thread identifier")
+    user_id: str = Field(..., description="User identifier")
+    tenant_id: str = Field(..., description="Tenant identifier")
+    role: str = Field(..., description="Collaborator role")
+    permissions: List[str] = Field(..., description="Thread-specific permissions")
+    is_active: bool = Field(..., description="Whether collaborator is active")
+    created_at: datetime = Field(..., description="Collaboration creation timestamp")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440006",
+                "thread_id": "550e8400-e29b-41d4-a716-446655440002",
+                "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+                "role": "editor",
+                "permissions": ["read", "write", "merge"],
+                "is_active": True,
+                "created_at": "2024-01-15T10:30:00Z"
+            }
+        }
+
 # Error schemas
 class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")

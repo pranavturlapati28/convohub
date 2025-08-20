@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Thread
 from app.schemas import ThreadCreate, ThreadOut
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_tenant_context, TenantContext
 from uuid import uuid4
 from datetime import datetime
 
@@ -25,7 +25,7 @@ router = APIRouter(tags=["threads"])
 def create_thread(
     body: ThreadCreate, 
     db: Session = Depends(get_db), 
-    user=Depends(get_current_user)
+    context: TenantContext = Depends(get_current_tenant_context)
 ):
     """
     Create a new conversation thread.
@@ -44,7 +44,8 @@ def create_thread(
     try:
         t = Thread(
             id=str(uuid4()), 
-            owner_id=user.id, 
+            tenant_id=context.tenant_id,
+            owner_id=context.user_id, 
             title=body.title,
             created_at=datetime.utcnow()
         )
