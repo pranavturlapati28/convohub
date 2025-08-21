@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from typing import List
 from app.db import get_db
 from app.models import Thread
 from app.schemas import ThreadCreate, ThreadOut
@@ -8,6 +9,46 @@ from uuid import uuid4
 from datetime import datetime
 
 router = APIRouter(tags=["threads"])
+
+@router.get(
+    "/threads",
+    response_model=List[ThreadOut],
+    summary="List threads",
+    description="List all threads accessible to the authenticated user.",
+    responses={
+        200: {"description": "Threads retrieved successfully"},
+        401: {"description": "Authentication required"},
+    }
+)
+def list_threads(
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_tenant_context)
+):
+    """
+    List all threads accessible to the authenticated user.
+    
+    Args:
+        db: Database session
+        context: Current tenant context
+        
+    Returns:
+        List[ThreadOut]: List of accessible threads
+    """
+    threads = (
+        db.query(Thread)
+        .filter(Thread.tenant_id == context.tenant_id)
+        .order_by(Thread.created_at.desc())
+        .all()
+    )
+    
+    return [
+        ThreadOut(
+            id=t.id,
+            title=t.title,
+            created_at=t.created_at
+        )
+        for t in threads
+    ]
 
 @router.post(
     "/threads", 

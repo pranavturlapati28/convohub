@@ -25,6 +25,11 @@ interface ConversationFlowProps {
   selectedNodeId: string | null
 }
 
+// Define nodeTypes at module scope to avoid re-creation warnings
+const nodeTypes: NodeTypes = {
+  messageNode: MessageNode,
+}
+
 export default function ConversationFlow({
   branches,
   messages,
@@ -35,11 +40,6 @@ export default function ConversationFlow({
 }: ConversationFlowProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
-
-  // Memoize nodeTypes to avoid React Flow warnings
-  const nodeTypes = useMemo<NodeTypes>(() => ({
-    messageNode: MessageNode,
-  }), [])
 
   // Convert branches to flow nodes
   const flowNodes = useMemo(() => {
@@ -77,6 +77,8 @@ export default function ConversationFlow({
           role,
           title,
           content: lastMessage?.content || '',
+          onSendMessage: (text: string) => onSendMessage(branch.id, text),
+          onCreateBranch: () => onCreateBranch(branch.id),
         },
         selected: selectedNodeId === branch.id,
       } as Node

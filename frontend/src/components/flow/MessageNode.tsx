@@ -17,13 +17,15 @@ export default function MessageNode({
   const [messageText, setMessageText] = useState('')
 
   const handleSendMessage = useCallback(() => {
-    if (messageText.trim()) {
-      // For now, just log the message since we can't pass callbacks through React Flow
+    if (!messageText.trim()) return
+    if (data.onSendMessage) {
+      data.onSendMessage(messageText.trim())
+    } else {
       console.log('Sending message:', messageText, 'to branch:', data.branch.id)
-      setMessageText('')
-      setShowInput(false)
     }
-  }, [messageText, data.branch.id])
+    setMessageText('')
+    setShowInput(false)
+  }, [messageText, data])
 
   const handleKeyPress = useCallback(
     (e: React.KeyboardEvent) => {
@@ -36,8 +38,12 @@ export default function MessageNode({
   )
 
   const handleCreateBranch = useCallback(() => {
-    console.log('Creating branch from:', data.branch.id)
-  }, [data.branch.id])
+    if (data.onCreateBranch) {
+      data.onCreateBranch()
+    } else {
+      console.log('Creating branch from:', data.branch.id)
+    }
+  }, [data])
 
   const getRoleIcon = () => {
     switch (data.role) {

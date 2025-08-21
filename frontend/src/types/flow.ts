@@ -9,6 +9,8 @@ export interface FlowNode extends Node {
     title: string
     content?: string
     isSelected?: boolean
+    onSendMessage?: (text: string) => void
+    onCreateBranch?: () => void
   }
 }
 
@@ -26,6 +28,8 @@ export interface NodeData {
   title: string
   content?: string
   isSelected?: boolean
+  onSendMessage?: (text: string) => void
+  onCreateBranch?: () => void
 }
 
 export interface FlowState {

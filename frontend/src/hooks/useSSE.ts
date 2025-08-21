@@ -1,3 +1,5 @@
+"use client"
+
 import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from './useConvoHub'
@@ -10,6 +12,7 @@ interface SSEEvent {
 export function useSSE(url: string, enabled: boolean = true) {
   const eventSourceRef = useRef<EventSource | null>(null)
   const queryClient = useQueryClient()
+  const isBrowser = typeof window !== 'undefined' && typeof window.EventSource !== 'undefined'
 
   const handleMessage = useCallback(
     (event: MessageEvent) => {
@@ -82,7 +85,7 @@ export function useSSE(url: string, enabled: boolean = true) {
   }, [])
 
   useEffect(() => {
-    if (!enabled || !url) return
+    if (!enabled || !url || !isBrowser) return
 
     // Create EventSource
     const eventSource = new EventSource(url)
@@ -101,10 +104,11 @@ export function useSSE(url: string, enabled: boolean = true) {
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [url, enabled, handleMessage, handleError, handleOpen])
+  }, [url, enabled, handleMessage, handleError, handleOpen, isBrowser])
 
   // Return connection status
   return {
-    isConnected: eventSourceRef.current?.readyState === EventSource.OPEN,
+    // 1 === OPEN; avoid referencing EventSource on the server
+    isConnected: !!(eventSourceRef.current && eventSourceRef.current.readyState === 1),
   }
 }

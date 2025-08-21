@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from typing import List
 from app.db import get_db
 from app.models import Branch, Thread, Message
 from app.schemas import BranchCreate, BranchOut
@@ -8,6 +9,49 @@ from uuid import uuid4
 from datetime import datetime, timedelta
 
 router = APIRouter(tags=["branches"])
+
+@router.get(
+    "/threads/{thread_id}/branches",
+    response_model=List[BranchOut],
+    status_code=status.HTTP_200_OK,
+    summary="List branches in a thread",
+    description="Retrieve all branches that belong to a given thread.",
+    responses={
+        200: {"description": "Branches retrieved successfully"},
+        404: {"description": "Thread not found"},
+        401: {"description": "Authentication required"},
+    }
+)
+def list_branches(
+    thread_id: str,
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_tenant_context)
+):
+    thread = db.get(Thread, thread_id)
+    if not thread or thread.owner_id != context.user_id or thread.tenant_id != context.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Thread not found"
+        )
+
+    branches = (
+        db.query(Branch)
+        .filter(Branch.thread_id == thread_id, Branch.tenant_id == context.tenant_id)
+        .order_by(Branch.created_at.asc())
+        .all()
+    )
+
+    return [
+        BranchOut(
+            id=b.id,
+            name=b.name,
+            thread_id=b.thread_id,
+            created_from_branch_id=b.created_from_branch_id,
+            created_from_message_id=b.created_from_message_id,
+            created_at=b.created_at,
+        )
+        for b in branches
+    ]
 
 @router.post(
     "/threads/{thread_id}/branches",

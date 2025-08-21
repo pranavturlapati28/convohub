@@ -23,13 +23,21 @@ class ConvoHubAPI {
   private client: AxiosInstance
   private token: string | null = null
 
-  constructor(baseURL: string = 'http://127.0.0.1:8000') {
+  constructor(baseURL: string = (process.env.NEXT_PUBLIC_CONVOHUB_API_URL as string) || 'http://127.0.0.1:8000') {
     this.client = axios.create({
       baseURL,
       headers: {
         'Content-Type': 'application/json',
       },
     })
+
+    // Load persisted token in browser
+    if (typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem('convohub_token')
+      if (stored) {
+        this.token = stored
+      }
+    }
 
     // Add request interceptor to include auth token
     this.client.interceptors.request.use((config) => {
@@ -42,10 +50,16 @@ class ConvoHubAPI {
 
   setToken(token: string) {
     this.token = token
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('convohub_token', token)
+    }
   }
 
   clearToken() {
     this.token = null
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('convohub_token')
+    }
   }
 
   // Authentication
@@ -56,6 +70,11 @@ class ConvoHubAPI {
   }
 
   // Threads
+  async listThreads(): Promise<Thread[]> {
+    const response = await this.client.get<Thread[]>('/v1/threads')
+    return response.data
+  }
+
   async createThread(request: CreateThreadRequest): Promise<Thread> {
     const response = await this.client.post<Thread>('/v1/threads', request)
     return response.data
@@ -76,6 +95,11 @@ class ConvoHubAPI {
   }
 
   // Branches
+  async listBranches(threadId: string): Promise<Branch[]> {
+    const response = await this.client.get<Branch[]>(`/v1/threads/${threadId}/branches`)
+    return response.data
+  }
+
   async createBranch(
     threadId: string,
     request: CreateBranchRequest

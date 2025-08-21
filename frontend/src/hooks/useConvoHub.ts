@@ -34,6 +34,15 @@ export function useLogin() {
 }
 
 // Threads
+export function useThreads() {
+  const hasToken = typeof window !== 'undefined' && !!window.localStorage.getItem('convohub_token')
+  return useQuery({
+    queryKey: queryKeys.threads,
+    queryFn: () => api.listThreads(),
+    enabled: hasToken,
+  })
+}
+
 export function useCreateThread() {
   const queryClient = useQueryClient()
   
@@ -62,6 +71,14 @@ export function useThreadMemories(threadId: string) {
 }
 
 // Branches
+export function useBranches(threadId: string) {
+  const hasToken = typeof window !== 'undefined' && !!window.localStorage.getItem('convohub_token')
+  return useQuery({
+    queryKey: queryKeys.branches(threadId),
+    queryFn: () => api.listBranches(threadId),
+    enabled: !!threadId && hasToken,
+  })
+}
 export function useCreateBranch() {
   const queryClient = useQueryClient()
   
