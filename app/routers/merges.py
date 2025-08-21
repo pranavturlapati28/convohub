@@ -2,14 +2,63 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import uuid4
 from app.db import get_db
-from app.models import Branch, Message, Merge
+from app.models import Branch, Message, Merge, Summary, Memory
 from app.schemas import MergeRequest, MergeResponse
 from app.idempotency import IdempotencyKey, validate_idempotency_key
+from app.rate_limiting import rate_limit_middleware
+from app.usage_tracker import UsageTracker, RateLimitHeaders
 from datetime import datetime
 
+from app.auth import get_current_user, get_current_tenant_context, TenantContext
 router = APIRouter(tags=["merges"])
 
 from app.merge_utils import find_lca, path_after, interleave_by_created_at
+
+
+@router.get(
+    "/merge/strategies",
+    summary="List available merge strategies",
+    description="Get a list of available merge strategies for combining summaries and memories.",
+    responses={
+        200: {"description": "Strategies retrieved successfully"},
+        401: {"description": "Authentication required"},
+    }
+)
+def list_merge_strategies():
+    """
+    List available merge strategies.
+    
+    Returns:
+        List of available merge strategy names and descriptions
+    """
+    strategies = MergeStrategyFactory.list_strategies()
+    
+    strategy_descriptions = {
+        "append-last": {
+            "name": "Append Last",
+            "description": "Baseline strategy that concatenates summaries and unions memories with newest-wins conflict resolution",
+            "summary_approach": "Concatenate parent summaries with separators",
+            "memory_approach": "Union with newest-wins conflict resolution"
+        },
+        "resolver": {
+            "name": "LLM Resolver", 
+            "description": "Advanced strategy using LLM to intelligently merge summaries and resolve memory conflicts",
+            "summary_approach": "LLM generates coherent merged summary",
+            "memory_approach": "LLM resolves conflicts and deduplicates"
+        }
+    }
+    
+    return {
+        "available_strategies": strategies,
+        "strategy_details": {
+            strategy: strategy_descriptions.get(strategy, {
+                "name": strategy,
+                "description": "Strategy details not available"
+            })
+            for strategy in strategies
+        }
+    }
+from app.merge_strategies import MergeStrategyFactory, MergeContext
 
 @router.post(
     "/merge",
@@ -28,7 +77,8 @@ from app.merge_utils import find_lca, path_after, interleave_by_created_at
 )
 def merge(
     req: MergeRequest, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_tenant_context)
 ):
     """
     Merge a source branch into a target branch.
@@ -43,6 +93,12 @@ def merge(
     Raises:
         HTTPException: If merge operation fails
     """
+    # Check rate limits and quotas
+    current_usage = UsageTracker.get_usage(db, context.tenant_id, "merges_per_day", context.user_id)
+    rate_limit_middleware.check_rate_limit_and_quota(
+        db, context, "merge", "merges_per_day", current_usage
+    )
+
     # Validate idempotency key
     validate_idempotency_key(req.idempotency_key)
     
@@ -109,6 +165,55 @@ def merge(
             db.add(merge_msg)
             db.flush() # Ensure merge_msg is persisted before Merge references it
             
+            # Apply merge strategy for summaries and memories
+            try:
+                merge_strategy = MergeStrategyFactory.create_strategy(req.strategy, db)
+                merge_context = MergeContext(
+                    thread_id=tgt.thread_id,
+                    source_branch_id=src.id,
+                    target_branch_id=tgt.id,
+                    merge_id=str(uuid4()),
+                    db=db
+                )
+                
+                merge_result = merge_strategy.merge_summaries_and_memories(merge_context)
+                
+                # Save merged summary if created
+                if merge_result.summary:
+                    merged_summary = Summary(
+                        thread_id=tgt.thread_id,
+                        summary_type="thread",
+                        content=merge_result.summary.content,
+                        summary_metadata=merge_result.summary.metadata,
+                        is_current=True,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    db.add(merged_summary)
+                
+                # Save merged memories
+                for memory in merge_result.memories:
+                    merged_memory = Memory(
+                        thread_id=tgt.thread_id,
+                        memory_type=memory.memory_type,
+                        key=memory.key,
+                        value=memory.value,
+                        memory_metadata=memory.metadata,
+                        confidence=memory.confidence,
+                        source=memory.source,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    db.add(merged_memory)
+                
+                # Update merge metadata with strategy results
+                diff_summary["merge_strategy_results"] = merge_result.metadata
+                
+            except Exception as strategy_error:
+                # Log strategy error but don't fail the merge
+                print(f"Merge strategy failed: {strategy_error}")
+                diff_summary["merge_strategy_error"] = str(strategy_error)
+            
             m = Merge(
                 id=str(uuid4()),
                 thread_id=tgt.thread_id,
@@ -125,6 +230,9 @@ def merge(
         # Only commit if this is the outermost transaction
         if not db.in_nested_transaction():
             db.commit()
+
+        # Track usage
+        UsageTracker.increment_usage(db, context.tenant_id, "merges_per_day", context.user_id, 1)
 
         result = MergeResponse(
             merge_id=m.id, 

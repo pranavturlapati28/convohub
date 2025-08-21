@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import threads, branches, messages, merges, diff, edges, auth
+from app.routers import threads, branches, messages, merges, diff, edges, auth, usage, context
 
 app = FastAPI(
     title="ConvoHub API",
@@ -67,6 +67,14 @@ app = FastAPI(
             "name": "auth",
             "description": "Authentication and multi-tenant user management",
         },
+        {
+            "name": "usage",
+            "description": "Usage tracking and quota management",
+        },
+        {
+            "name": "context",
+            "description": "Context building and inspection",
+        },
     ]
 )
 
@@ -118,6 +126,8 @@ async def http_exception_handler(request, exc):
     )
 
 app.include_router(auth.router, prefix="/v1")
+app.include_router(usage.router, prefix="/v1")
+app.include_router(context.router, prefix="/v1")
 app.include_router(threads.router, prefix="/v1")
 app.include_router(branches.router, prefix="/v1")
 app.include_router(messages.router, prefix="/v1")

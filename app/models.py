@@ -1,6 +1,6 @@
 # app/models.py
 import uuid, datetime
-from sqlalchemy import Column, String, DateTime, ForeignKey, CheckConstraint, JSON, Text, Boolean, Index, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, ForeignKey, CheckConstraint, JSON, Text, Boolean, Index, UniqueConstraint, Integer, Date
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db import Base
@@ -359,4 +359,29 @@ class IdempotencyRecord(Base):
         UniqueConstraint('tenant_id', 'key', 'operation', name='uq_idempotency_tenant_key_operation'),
         Index('ix_idempotency_tenant', 'tenant_id'),
         Index('ix_idempotency_created', 'created_at'),
+    )
+
+
+class UsageRecord(Base):
+    """Tracks usage for quota management"""
+    __tablename__ = "usage_records"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uid)
+    tenant_id = Column(UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    usage_type = Column(String(50), nullable=False)  # messages_per_day, merges_per_day, etc.
+    count = Column(Integer, nullable=False, default=1)
+    date = Column(Date, nullable=False)  # Date for daily quotas
+    created_at = Column(DateTime, default=now, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    # relationships
+    tenant = relationship("Tenant")
+    user = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("count >= 0", name="ck_usage_count_positive"),
+        UniqueConstraint('tenant_id', 'user_id', 'usage_type', 'date', name='uq_usage_tenant_user_type_date'),
+        Index('ix_usage_tenant_type_date', 'tenant_id', 'usage_type', 'date'),
+        Index('ix_usage_user_type_date', 'user_id', 'usage_type', 'date'),
+        Index('ix_usage_date', 'date'),
     )

@@ -7,9 +7,13 @@ from uuid import uuid4
 from app.db import get_db
 from app.models import Branch, Message
 from app.schemas import MessageIn, MessageOut, MessageResponse, PaginatedMessages, PaginationParams
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_tenant_context, TenantContext
 from app.llm import assistant_reply
+from app.context_builder import ContextBuilder, ContextPolicy
 from app.idempotency import IdempotencyKey, validate_idempotency_key
+from app.rate_limiting import rate_limit_middleware
+from app.usage_tracker import UsageTracker, RateLimitHeaders
+from app.summary_memory import SummaryMemoryManager
 
 from datetime import datetime
 
@@ -115,7 +119,7 @@ def send_user_message(
     body: MessageIn, 
     idempotency_key: Optional[str] = Query(None, description="Idempotency key to prevent duplicate operations"),
     db: Session = Depends(get_db), 
-    user=Depends(get_current_user)
+    context: TenantContext = Depends(get_current_tenant_context)
 ):
     """
     Send a user message to a branch and get an AI response.
@@ -125,7 +129,7 @@ def send_user_message(
         body: Message data
         idempotency_key: Optional idempotency key to prevent duplicates
         db: Database session
-        user: Authenticated user
+        context: Tenant context
         
     Returns:
         MessageResponse: IDs of created user and assistant messages
@@ -139,6 +143,12 @@ def send_user_message(
             status_code=status.HTTP_404_NOT_FOUND, 
             detail="Branch not found"
         )
+
+    # Check rate limits and quotas
+    current_usage = UsageTracker.get_usage(db, context.tenant_id, "messages_per_day", context.user_id)
+    rate_limit_middleware.check_rate_limit_and_quota(
+        db, context, "send_message", "messages_per_day", current_usage
+    )
 
     # Handle idempotency if key provided
     if idempotency_key:
@@ -166,6 +176,7 @@ def send_user_message(
 
             user_msg = Message(
                 id=str(uuid4()),
+                tenant_id=context.tenant_id,
                 branch_id=branch_id,
                 parent_message_id=parent_id_for_user,
                 role="user",
@@ -175,23 +186,28 @@ def send_user_message(
             db.add(user_msg)
             db.flush() # Ensure user_msg is persisted before assistant_msg references it
 
-            # Get conversation history
-            prior = (db.query(Message)
-                       .filter(Message.branch_id == branch_id)
-                       .order_by(Message.created_at.asc())
-                       .all())
-            def to_text(c):
-                if isinstance(c, dict):
-                    return c.get("text", "")
-                return "" if c is None else str(c)
-
-            history = [{"role": m.role, "content": to_text(m.content)} for m in prior]
+            # Build context using single source of truth
+            conversation_context = ContextBuilder(db).build_context(
+                branch_id,
+                ContextPolicy(window_size=50, use_summary=True, use_memory=True, max_tokens=8000)
+            )
+            # Convert context to LLM history format
+            history = []
+            if conversation_context.system:
+                history.append({"role": "system", "content": conversation_context.system})
+            for m in conversation_context.messages_window:
+                content = m.get("content")
+                if isinstance(content, dict):
+                    content = content.get("text", "")
+                history.append({"role": m.get("role", "user"), "content": content})
+            # Append the current user message last
             history.append({"role": "user", "content": body.text})
 
             ai_text = assistant_reply(history)
 
             ai_msg = Message(
                 id=str(uuid4()),
+                tenant_id=context.tenant_id,
                 branch_id=branch_id,
                 parent_message_id=user_msg.id,
                 role="assistant",
@@ -200,10 +216,23 @@ def send_user_message(
                 created_at=datetime.utcnow(),
             )
             db.add(ai_msg)
+            db.flush()  # Ensure ai_msg is persisted before summary/memory update
+
+            # Update rolling summary and extract structured memory
+            summary_manager = SummaryMemoryManager(db)
+            updated_summary, new_memories = summary_manager.update_after_assistant_message(
+                thread_id=branch.thread_id,
+                branch_id=branch_id,
+                assistant_message=ai_msg,
+                target_summary_tokens=200
+            )
 
         # Only commit if this is the outermost transaction
         if not db.in_nested_transaction():
             db.commit()
+
+        # Track usage (count as 2 messages: user + assistant)
+        UsageTracker.increment_usage(db, context.tenant_id, "messages_per_day", context.user_id, 2)
 
         result = MessageResponse(
             user_message_id=user_msg.id, 

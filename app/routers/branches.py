@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Branch, Thread, Message
 from app.schemas import BranchCreate, BranchOut
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_tenant_context, TenantContext
 from uuid import uuid4
 from datetime import datetime, timedelta
 
@@ -27,7 +27,7 @@ def create_branch(
     thread_id: str, 
     body: BranchCreate, 
     db: Session = Depends(get_db), 
-    user=Depends(get_current_user)
+    context: TenantContext = Depends(get_current_tenant_context)
 ):
     """
     Create a new branch in a thread.
@@ -45,7 +45,7 @@ def create_branch(
         HTTPException: If branch creation fails
     """
     thread = db.get(Thread, thread_id)
-    if not thread or thread.owner_id != user.id:
+    if not thread or thread.owner_id != context.user_id or thread.tenant_id != context.tenant_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, 
             detail="Thread not found"
@@ -77,6 +77,16 @@ def create_branch(
     try:
         b = Branch(
             id=str(uuid4()),
+            tenant_id=context.tenant_id,
+            thread_id=thread_id,
+            name=body.name,
+            created_from_branch_id=body.created_from_branch_id,
+            created_from_message_id=body.created_from_message_id,
+            created_at=datetime.utcnow(),
+        )
+        b = Branch(
+            id=str(uuid4()),
+            tenant_id=context.tenant_id,
             thread_id=thread_id,
             name=body.name,
             created_from_branch_id=body.created_from_branch_id,
@@ -84,10 +94,12 @@ def create_branch(
             created_at=datetime.utcnow(),
         )
         db.add(b)
-
+        db.flush()  # Ensure branch is persisted
+        
         seed_id = str(uuid4())
         seed = Message(
             id=seed_id,
+            tenant_id=context.tenant_id,
             branch_id=b.id,
             parent_message_id=None,
             role="system",
@@ -96,6 +108,9 @@ def create_branch(
             created_at=datetime.utcnow() - timedelta(seconds=1),  # Ensure it's first
         )
         db.add(seed)
+        db.flush()  # Ensure seed message is persisted
+        
+        # Update branch with base_message_id
         b.base_message_id = seed_id
 
         # Copy messages from source branch to create shared history
@@ -105,6 +120,7 @@ def create_branch(
             for i, src_msg in enumerate(source_messages[1:], 1):  # Start from index 1
                 new_msg = Message(
                     id=str(uuid4()),
+                    tenant_id=context.tenant_id,
                     branch_id=b.id,
                     parent_message_id=prev_msg_id,
                     role=src_msg.role,

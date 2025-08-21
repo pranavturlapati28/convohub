@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Literal, Dict, Any
 from datetime import datetime
 import uuid
+from enum import Enum
 
 Role = Literal["user", "assistant", "system", "tool"]
 
@@ -191,9 +192,9 @@ class MergeRequest(BaseModel):
     thread_id: str = Field(..., description="Thread ID")
     source_branch_id: str = Field(..., description="Source branch ID")
     target_branch_id: str = Field(..., description="Target branch ID")
-    strategy: Literal["syntactic", "semantic", "hybrid"] = Field(
+    strategy: Literal["syntactic", "semantic", "hybrid", "append-last", "resolver"] = Field(
         default="hybrid", 
-        description="Merge strategy to use"
+        description="Merge strategy to use (syntactic/semantic/hybrid for message merging, append-last/resolver for summary/memory merging)"
     )
     idempotency_key: str = Field(
         ..., 
@@ -233,11 +234,91 @@ class MergeResponse(BaseModel):
         }
 
 # Diff schemas
+class DiffMode(str, Enum):
+    """Diff modes for comparing branches"""
+    SUMMARY = "summary"
+    MESSAGES = "messages" 
+    MEMORY = "memory"
+
+class MemoryDiff(BaseModel):
+    """Represents differences in memory between branches"""
+    added: List[Dict[str, Any]] = Field(..., description="Memories added in right branch")
+    removed: List[Dict[str, Any]] = Field(..., description="Memories removed in right branch")
+    modified: List[Dict[str, Any]] = Field(..., description="Memories modified between branches")
+    conflicts: List[Dict[str, Any]] = Field(..., description="Conflicting memories that need resolution")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "added": [
+                    {
+                        "key": "user_preference_20250821_021401",
+                        "value": "Prefers JavaScript for web development",
+                        "memory_type": "preference",
+                        "confidence": "high"
+                    }
+                ],
+                "removed": [],
+                "modified": [],
+                "conflicts": []
+            }
+        }
+
+class SummaryDiff(BaseModel):
+    """Represents differences in summaries between branches"""
+    left_summary: Optional[str] = Field(None, description="Summary from left branch")
+    right_summary: Optional[str] = Field(None, description="Summary from right branch")
+    common_content: str = Field(..., description="Content common to both summaries")
+    left_only: str = Field(..., description="Content only in left summary")
+    right_only: str = Field(..., description="Content only in right summary")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "left_summary": "Discussion about Python advantages...",
+                "right_summary": "Discussion about JavaScript benefits...",
+                "common_content": "Both branches discuss programming languages",
+                "left_only": "Python advantages: readability, versatility",
+                "right_only": "JavaScript benefits: browser compatibility, React"
+            }
+        }
+
+class MessageRange(BaseModel):
+    """Represents a range of messages by ID"""
+    start_id: str = Field(..., description="Starting message ID")
+    end_id: str = Field(..., description="Ending message ID")
+    count: int = Field(..., description="Number of messages in range")
+    messages: List[Dict[str, Any]] = Field(..., description="Messages in this range")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "start_id": "550e8400-e29b-41d4-a716-446655440001",
+                "end_id": "550e8400-e29b-41d4-a716-446655440005",
+                "count": 5,
+                "messages": [
+                    {"id": "550e8400-e29b-41d4-a716-446655440001", "role": "user", "content": "Hello"},
+                    {"id": "550e8400-e29b-41d4-a716-446655440002", "role": "assistant", "content": "Hi there!"}
+                ]
+            }
+        }
+
 class DiffResponse(BaseModel):
     lca: Optional[str] = Field(None, description="Lowest Common Ancestor message ID")
     src_delta: List[str] = Field(..., description="Messages unique to source branch")
     tgt_delta: List[str] = Field(..., description="Messages unique to target branch")
     merged_order: List[str] = Field(..., description="Chronologically merged message IDs")
+    
+    # Enhanced diff fields
+    mode: DiffMode = Field(..., description="Diff mode used")
+    memory_diff: Optional[MemoryDiff] = Field(None, description="Memory differences (for memory mode)")
+    summary_diff: Optional[SummaryDiff] = Field(None, description="Summary differences (for summary mode)")
+    message_ranges: Optional[List[MessageRange]] = Field(None, description="Message ranges (for messages mode)")
+    
+    # Metadata
+    left_branch_id: str = Field(..., description="Left branch ID")
+    right_branch_id: str = Field(..., description="Right branch ID")
+    diff_timestamp: datetime = Field(..., description="When this diff was computed")
 
     class Config:
         schema_extra = {
@@ -249,7 +330,17 @@ class DiffResponse(BaseModel):
                     "550e8400-e29b-41d4-a716-446655440002",
                     "550e8400-e29b-41d4-a716-446655440003",
                     "550e8400-e29b-41d4-a716-446655440004"
-                ]
+                ],
+                "mode": "memory",
+                "memory_diff": {
+                    "added": [{"key": "new_memory", "value": "New information"}],
+                    "removed": [],
+                    "modified": [],
+                    "conflicts": []
+                },
+                "left_branch_id": "550e8400-e29b-41d4-a716-446655440001",
+                "right_branch_id": "550e8400-e29b-41d4-a716-446655440002",
+                "diff_timestamp": "2024-01-15T10:30:00Z"
             }
         }
 
@@ -459,6 +550,34 @@ class ThreadCollaboratorOut(BaseModel):
                 "permissions": ["read", "write", "merge"],
                 "is_active": True,
                 "created_at": "2024-01-15T10:30:00Z"
+            }
+        }
+
+# Usage schemas
+class UsageSummary(BaseModel):
+    tenant_id: str = Field(..., description="Tenant identifier")
+    user_id: Optional[str] = Field(None, description="User identifier (if user-specific)")
+    usage: Dict[str, Dict[str, Any]] = Field(..., description="Usage information by type")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+                "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                "usage": {
+                    "messages_per_day": {
+                        "current": 150,
+                        "quota": 10000,
+                        "remaining": 9850,
+                        "percentage": 1.5
+                    },
+                    "merges_per_day": {
+                        "current": 5,
+                        "quota": 1000,
+                        "remaining": 995,
+                        "percentage": 0.5
+                    }
+                }
             }
         }
 

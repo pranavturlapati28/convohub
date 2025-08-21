@@ -47,6 +47,11 @@ htmlcov/
 # Node (if present)
 node_modules/
 
+# Next.js build artifacts
+.next/
+out/
+build/
+
 # SQLite or local DB files
 *.db
 *.sqlite3
